@@ -1,0 +1,35 @@
+manual_pasteurization_trigger:
+  fields:
+    device_id:
+      required: false
+      selector:
+        device:
+          integration: geyser_pasteurization
+    entry_id:
+      required: false
+      selector:
+        text:
+
+reset_timer:
+  fields:
+    device_id:
+      required: false
+      selector:
+        device:
+          integration: geyser_pasteurization
+    entry_id:
+      required: false
+      selector:
+        text:
+
+cancel_pasteurization_cycle:
+  fields:
+    device_id:
+      required: false
+      selector:
+        device:
+          integration: geyser_pasteurization
+    entry_id:
+      required: false
+      selector:
+        text:

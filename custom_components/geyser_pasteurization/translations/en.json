@@ -1,0 +1,137 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Set up Geyser Pasteurization",
+        "description": "Configure the temperature sensor and heater used to run scheduled Legionella disinfection cycles.",
+        "data": {
+          "temperature_sensor": "Geyser temperature sensor",
+          "heater_entity": "Heater control entity",
+          "target_temperature": "Target disinfection temperature",
+          "required_duration_minutes": "Required continuous duration",
+          "rolling_window_days": "Maximum rolling window",
+          "max_runtime_minutes": "Maximum failsafe run time",
+          "allowed_start_time": "Allowed run window start (optional)",
+          "allowed_end_time": "Allowed run window end (optional)",
+          "strict_reset": "Strict cycle reset"
+        },
+        "data_description": {
+          "temperature_sensor": "The sensor reporting the geyser's water temperature.",
+          "heater_entity": "The switch, climate, or water_heater entity that engages the electric heating element.",
+          "target_temperature": "Water must reach this temperature for disinfection to count.",
+          "required_duration_minutes": "Minutes the temperature must stay at or above target, continuously.",
+          "rolling_window_days": "If no valid cycle completes within this many days, a cycle becomes due.",
+          "max_runtime_minutes": "Safety cutoff: the heater is disengaged if a cycle runs this long without completing.",
+          "allowed_start_time": "Automatic cycles only start after this time of day. Leave blank to allow anytime.",
+          "allowed_end_time": "Automatic cycles only start before this time of day. Leave blank to allow anytime.",
+          "strict_reset": "If enabled, any drop below target resets the duration timer to zero instead of pausing it."
+        }
+      }
+    },
+    "abort": {
+      "already_configured": "This temperature sensor and heater combination is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Geyser Pasteurization options",
+        "data": {
+          "target_temperature": "Target disinfection temperature",
+          "required_duration_minutes": "Required continuous duration",
+          "rolling_window_days": "Maximum rolling window",
+          "max_runtime_minutes": "Maximum failsafe run time",
+          "allowed_start_time": "Allowed run window start (optional)",
+          "allowed_end_time": "Allowed run window end (optional)",
+          "strict_reset": "Strict cycle reset"
+        }
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "status": {
+        "name": "Status",
+        "state": {
+          "compliant": "Compliant",
+          "due": "Due",
+          "heating": "Heating",
+          "pasteurizing": "Pasteurizing",
+          "failed": "Failed"
+        }
+      },
+      "last_pasteurization": {
+        "name": "Last pasteurization"
+      },
+      "days_since_pasteurization": {
+        "name": "Days since pasteurization"
+      },
+      "cycle_progress": {
+        "name": "Cycle progress"
+      }
+    },
+    "binary_sensor": {
+      "pasteurization_overdue": {
+        "name": "Pasteurization overdue"
+      },
+      "pasteurization_active": {
+        "name": "Pasteurization active"
+      }
+    },
+    "button": {
+      "trigger_pasteurization_cycle": {
+        "name": "Trigger pasteurization cycle"
+      },
+      "reset_pasteurization_timer": {
+        "name": "Reset pasteurization timer"
+      },
+      "cancel_pasteurization_cycle": {
+        "name": "Cancel pasteurization cycle"
+      }
+    }
+  },
+  "services": {
+    "manual_pasteurization_trigger": {
+      "name": "Trigger pasteurization cycle",
+      "description": "Immediately starts a disinfection cycle, bypassing the allowed run window.",
+      "fields": {
+        "device_id": {
+          "name": "Device",
+          "description": "The Geyser Pasteurization device to target."
+        },
+        "entry_id": {
+          "name": "Entry ID",
+          "description": "The config entry ID to target, if not using device."
+        }
+      }
+    },
+    "reset_timer": {
+      "name": "Reset pasteurization timer",
+      "description": "Marks the system as pasteurized now without running a heating cycle.",
+      "fields": {
+        "device_id": {
+          "name": "Device",
+          "description": "The Geyser Pasteurization device to target."
+        },
+        "entry_id": {
+          "name": "Entry ID",
+          "description": "The config entry ID to target, if not using device."
+        }
+      }
+    },
+    "cancel_pasteurization_cycle": {
+      "name": "Cancel pasteurization cycle",
+      "description": "Safely aborts an in-progress heating or pasteurizing cycle.",
+      "fields": {
+        "device_id": {
+          "name": "Device",
+          "description": "The Geyser Pasteurization device to target."
+        },
+        "entry_id": {
+          "name": "Entry ID",
+          "description": "The config entry ID to target, if not using device."
+        }
+      }
+    }
+  }
+}
