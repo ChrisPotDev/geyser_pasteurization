@@ -13,12 +13,15 @@ from homeassistant.helpers.selector import (
     NumberSelector,
     NumberSelectorConfig,
     NumberSelectorMode,
+    TextSelector,
     TimeSelector,
 )
 
 from .const import (
     CONF_ALLOWED_END,
     CONF_ALLOWED_START,
+    CONF_GRID_ON_STATE,
+    CONF_GRID_SENSOR,
     CONF_HEATER_ENTITY,
     CONF_MAX_RUNTIME,
     CONF_REQUIRED_DURATION,
@@ -26,6 +29,7 @@ from .const import (
     CONF_STRICT_RESET,
     CONF_TARGET_TEMP,
     CONF_TEMP_SENSOR,
+    DEFAULT_GRID_ON_STATE,
     DEFAULT_MAX_RUNTIME_MINUTES,
     DEFAULT_REQUIRED_DURATION_MINUTES,
     DEFAULT_ROLLING_WINDOW_DAYS,
@@ -104,6 +108,13 @@ def _shared_schema(defaults: dict[str, Any]) -> vol.Schema:
                 CONF_STRICT_RESET,
                 default=defaults.get(CONF_STRICT_RESET, DEFAULT_STRICT_RESET),
             ): BooleanSelector(),
+            vol.Optional(
+                CONF_GRID_SENSOR, default=defaults.get(CONF_GRID_SENSOR)
+            ): EntitySelector(EntitySelectorConfig()),
+            vol.Optional(
+                CONF_GRID_ON_STATE,
+                default=defaults.get(CONF_GRID_ON_STATE, DEFAULT_GRID_ON_STATE),
+            ): TextSelector(),
         }
     )
 
@@ -134,6 +145,8 @@ class GeyserPasteurizationConfigFlow(ConfigFlow, domain=DOMAIN):
                 CONF_ALLOWED_START: user_input.get(CONF_ALLOWED_START),
                 CONF_ALLOWED_END: user_input.get(CONF_ALLOWED_END),
                 CONF_STRICT_RESET: user_input[CONF_STRICT_RESET],
+                CONF_GRID_SENSOR: user_input.get(CONF_GRID_SENSOR),
+                CONF_GRID_ON_STATE: user_input.get(CONF_GRID_ON_STATE, DEFAULT_GRID_ON_STATE),
             }
             return self.async_create_entry(title="Geyser Pasteurization", data=data)
 

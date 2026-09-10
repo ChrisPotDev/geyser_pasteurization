@@ -23,12 +23,14 @@ async def async_setup_entry(
     """Set up Geyser Pasteurization binary sensors."""
     coordinator: GeyserPasteurizationCoordinator = hass.data[DOMAIN][entry.entry_id]
 
-    async_add_entities(
-        [
-            GeyserOverdueBinarySensor(coordinator, entry),
-            GeyserActiveBinarySensor(coordinator, entry),
-        ]
-    )
+    entities: list[_GeyserBinarySensorBase] = [
+        GeyserOverdueBinarySensor(coordinator, entry),
+        GeyserActiveBinarySensor(coordinator, entry),
+    ]
+    if coordinator.grid_sensor_entity_id:
+        entities.append(GeyserGridPowerBinarySensor(coordinator, entry))
+
+    async_add_entities(entities)
 
 
 class _GeyserBinarySensorBase(
@@ -91,3 +93,22 @@ class GeyserActiveBinarySensor(_GeyserBinarySensorBase):
     @property
     def is_on(self) -> bool:
         return self.coordinator.data.state in ACTIVE_STATES
+
+
+class GeyserGridPowerBinarySensor(_GeyserBinarySensorBase):
+    """On while the configured grid power sensor reports on-grid power."""
+
+    def __init__(self, coordinator: GeyserPasteurizationCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(
+            coordinator,
+            entry,
+            BinarySensorEntityDescription(
+                key="on_grid_power",
+                translation_key="on_grid_power",
+                device_class=BinarySensorDeviceClass.POWER,
+            ),
+        )
+
+    @property
+    def is_on(self) -> bool:
+        return self.coordinator.data.on_grid_power

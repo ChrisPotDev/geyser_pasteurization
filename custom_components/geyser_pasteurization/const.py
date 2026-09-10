@@ -20,6 +20,8 @@ CONF_MAX_RUNTIME: Final = "max_runtime_minutes"
 CONF_ALLOWED_START: Final = "allowed_start_time"
 CONF_ALLOWED_END: Final = "allowed_end_time"
 CONF_STRICT_RESET: Final = "strict_reset"
+CONF_GRID_SENSOR: Final = "grid_power_sensor"
+CONF_GRID_ON_STATE: Final = "grid_power_on_state"
 
 # --- Defaults ---------------------------------------------------------------
 DEFAULT_TARGET_TEMP: Final = 60.0
@@ -28,6 +30,7 @@ DEFAULT_ROLLING_WINDOW_DAYS: Final = 7
 DEFAULT_MAX_RUNTIME_MINUTES: Final = 180
 DEFAULT_STRICT_RESET: Final = False
 DEFAULT_UPDATE_INTERVAL_SECONDS: Final = 30
+DEFAULT_GRID_ON_STATE: Final = "on"
 
 MIN_TARGET_TEMP: Final = 40.0
 MAX_TARGET_TEMP: Final = 80.0
@@ -87,3 +90,5 @@ ATTR_MAX_RUNTIME_MINUTES: Final = "max_runtime_minutes"
 ATTR_ERROR_MESSAGE: Final = "error_message"
 ATTR_LAST_PASTEURIZATION: Final = "last_pasteurization"
 ATTR_MINUTES_REMAINING: Final = "minutes_remaining"
+ATTR_ON_GRID_POWER: Final = "on_grid_power"
+ATTR_PAUSED_REASON: Final = "paused_reason"

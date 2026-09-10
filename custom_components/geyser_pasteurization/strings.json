@@ -13,7 +13,9 @@
           "max_runtime_minutes": "Maximum failsafe run time",
           "allowed_start_time": "Allowed run window start (optional)",
           "allowed_end_time": "Allowed run window end (optional)",
-          "strict_reset": "Strict cycle reset"
+          "strict_reset": "Strict cycle reset",
+          "grid_power_sensor": "Grid power sensor (optional)",
+          "grid_power_on_state": "\"On grid\" state value"
         },
         "data_description": {
           "temperature_sensor": "The sensor reporting the geyser's water temperature.",
@@ -24,7 +26,9 @@
           "max_runtime_minutes": "Safety cutoff: the heater is disengaged if a cycle runs this long without completing.",
           "allowed_start_time": "Automatic cycles only start after this time of day. Leave blank to allow anytime.",
           "allowed_end_time": "Automatic cycles only start before this time of day. Leave blank to allow anytime.",
-          "strict_reset": "If enabled, any drop below target resets the duration timer to zero instead of pausing it."
+          "strict_reset": "If enabled, any drop below target resets the duration timer to zero instead of pausing it.",
+          "grid_power_sensor": "Any entity reporting your power source (e.g. from a hybrid inverter/PDU). If set, cycles will only start or continue while this reports the \"on grid\" value below — the heater is disengaged and the cycle paused (not cancelled) while running on battery/inverter, and resumes automatically once grid power returns. Leave blank to disable this check.",
+          "grid_power_on_state": "The exact state value of the sensor above that means \"on grid power\" (e.g. \"on\" for a binary_sensor, or \"Grid\" for a text sensor). Case-insensitive."
         }
       }
     },
@@ -43,7 +47,13 @@
           "max_runtime_minutes": "Maximum failsafe run time",
           "allowed_start_time": "Allowed run window start (optional)",
           "allowed_end_time": "Allowed run window end (optional)",
-          "strict_reset": "Strict cycle reset"
+          "strict_reset": "Strict cycle reset",
+          "grid_power_sensor": "Grid power sensor (optional)",
+          "grid_power_on_state": "\"On grid\" state value"
+        },
+        "data_description": {
+          "grid_power_sensor": "Any entity reporting your power source. If set, cycles only start or continue while this reports the \"on grid\" value below.",
+          "grid_power_on_state": "The exact state value that means \"on grid power\" (e.g. \"on\" or \"Grid\"). Case-insensitive."
         }
       }
     }
@@ -76,6 +86,9 @@
       },
       "pasteurization_active": {
         "name": "Pasteurization active"
+      },
+      "on_grid_power": {
+        "name": "On grid power"
       }
     },
     "button": {

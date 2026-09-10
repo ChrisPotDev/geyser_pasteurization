@@ -17,6 +17,7 @@ Hybrid geysers with solar diversion heat opportunistically: whenever there's exc
 - Survives Home Assistant restarts safely — the last successful cycle timestamp is persisted, but a restart **never** auto-resumes an in-progress heating cycle
 - Native HA events (`geyser_pasteurization_started`, `geyser_pasteurization_completed`, `geyser_pasteurization_failed`) for automations/notifications
 - Works with `switch`, `input_boolean`, `climate`, or `water_heater` entities as the heater control
+- Optional grid-power gate for battery/inverter setups: cycles only start (and are paused, not cancelled, mid-cycle) while you're on grid power — see [Grid power gate](#grid-power-gate-battery--inverter-setups) below
 - Fully configurable via the UI (config flow + options flow) — no YAML required
 
 ## Installation
@@ -50,8 +51,26 @@ All configuration is done through the UI. On initial setup you're asked for:
 | Maximum failsafe run time | Safety cutoff — heater is disengaged and the cycle fails if it runs this long without completing | 180 |
 | Allowed run window (optional) | Restricts *automatic* cycle starts to a time-of-day range (e.g. 02:00–05:00). Manual triggers always bypass this. | none (anytime) |
 | Strict cycle reset | If a cycle drops below target mid-hold: `off` pauses the timer and resumes when temp recovers; `on` resets the timer to zero | off |
+| Grid power sensor (optional) | Any entity reporting your power source. See [Grid power gate](#grid-power-gate-battery--inverter-setups). | none (always allowed) |
+| "On grid" state value | The exact state string of the sensor above that means "on grid power" | `on` |
 
 All of these except the two entities can be changed later via **Settings → Devices & Services → Geyser Pasteurization → Configure** (the options flow), without removing and re-adding the integration.
+
+## Grid power gate (battery / inverter setups)
+
+If your geyser sits behind a power distribution module that can switch it between grid and inverter/battery (e.g. to protect battery capacity, with automatic failover to inverter on a grid outage), you don't want a disinfection cycle heating off your battery. Set the **grid power sensor** field to any entity that reflects your current power source — a `binary_sensor`, `switch`, `input_boolean`, or a text/enum `sensor` (e.g. one reporting `"Grid"` / `"Battery"` from a Victron, Deye, Sunsynk, etc. integration) — and set **"On grid" state value** to whatever that entity reports when you're on grid (defaults to `on`, which already matches a plain binary_sensor/switch with no changes needed; for a text sensor you'd set this to e.g. `Grid`). The match is case-insensitive.
+
+If your source is a text/enum sensor and you'd rather not touch the state-value matching, you can instead wrap it in a [template binary_sensor helper](https://www.home-assistant.io/integrations/template/) that's `on` when on grid, and point the grid power sensor field at that helper with the default `on` value — either approach works equally well.
+
+With this configured:
+
+- **Due → Heating** only happens while on grid power (in addition to the allowed run window, if set).
+- **Mid-cycle grid loss** (Heating or Pasteurizing) immediately disengages the heater and pauses the cycle — progress toward the required hold duration is preserved, not reset — and it resumes automatically the moment grid power returns, picking up where it left off.
+- Time spent paused waiting for grid power does **not** count against the failsafe run-time cutoff; only actual heater-engaged time does.
+- The **manual trigger** button/service also respects this gate and refuses to start a cycle while off-grid (the status sensor's `error_message` attribute explains why).
+- A `binary_sensor.geyser_on_grid_power` entity is added automatically once a grid sensor is configured, and the status sensor also exposes `on_grid_power` and `paused_reason` attributes for dashboards/automations.
+
+This is handled natively by the integration's own state machine rather than through a separate automation, specifically so that a grid outage mid-cycle pauses and resumes correctly instead of losing progress or needing you to script that logic yourself.
 
 ## How it works — the state machine
 
@@ -89,7 +108,8 @@ Every entity is grouped under a single **Geyser Pasteurization** device.
 | `sensor.geyser_cycle_progress` | Sensor | 0–100% progress of an active hold; attributes include minutes elapsed/remaining |
 | `binary_sensor.geyser_pasteurization_overdue` | Binary sensor | `on` when the rolling window has been exceeded |
 | `binary_sensor.geyser_pasteurization_active` | Binary sensor | `on` while heating or pasteurizing |
-| `button.trigger_pasteurization_cycle` | Button | Immediately starts a cycle, bypassing the allowed run window |
+| `binary_sensor.geyser_on_grid_power` | Binary sensor | `on` while on grid power. Only created if a grid power sensor is configured. |
+| `button.trigger_pasteurization_cycle` | Button | Immediately starts a cycle, bypassing the allowed run window (but not the grid power gate, if configured) |
 | `button.reset_pasteurization_timer` | Button | Marks the system as pasteurized *now* (e.g. you verified disinfection some other way), without running a cycle |
 | `button.cancel_pasteurization_cycle` | Button | Safely aborts an in-progress cycle (heater off) without marking it compliant |
 

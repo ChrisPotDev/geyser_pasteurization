@@ -24,6 +24,8 @@ from .const import (
     ATTR_ERROR_MESSAGE,
     ATTR_MAX_RUNTIME_MINUTES,
     ATTR_MINUTES_REMAINING,
+    ATTR_ON_GRID_POWER,
+    ATTR_PAUSED_REASON,
     ATTR_REQUIRED_DURATION_MINUTES,
     ATTR_ROLLING_WINDOW_DAYS,
     ATTR_TARGET_TEMPERATURE,
@@ -107,6 +109,8 @@ class GeyserStatusSensor(_GeyserSensorBase):
             ATTR_MAX_RUNTIME_MINUTES: data.max_runtime_minutes,
             ATTR_CYCLE_RUNTIME_MINUTES: round(data.cycle_runtime_seconds / 60, 2),
             ATTR_ERROR_MESSAGE: data.error_message,
+            ATTR_ON_GRID_POWER: data.on_grid_power,
+            ATTR_PAUSED_REASON: data.paused_reason,
         }
 
 

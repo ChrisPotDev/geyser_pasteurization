@@ -23,6 +23,8 @@ from .const import (
     ACTIVE_STATES,
     CONF_ALLOWED_END,
     CONF_ALLOWED_START,
+    CONF_GRID_ON_STATE,
+    CONF_GRID_SENSOR,
     CONF_HEATER_ENTITY,
     CONF_MAX_RUNTIME,
     CONF_REQUIRED_DURATION,
@@ -30,6 +32,7 @@ from .const import (
     CONF_STRICT_RESET,
     CONF_TARGET_TEMP,
     CONF_TEMP_SENSOR,
+    DEFAULT_GRID_ON_STATE,
     DEFAULT_MAX_RUNTIME_MINUTES,
     DEFAULT_REQUIRED_DURATION_MINUTES,
     DEFAULT_ROLLING_WINDOW_DAYS,
@@ -71,6 +74,8 @@ class GeyserPasteurizationData:
     max_runtime_minutes: int
     minutes_remaining: float
     error_message: str | None
+    on_grid_power: bool
+    paused_reason: str | None
 
 
 class GeyserPasteurizationCoordinator(DataUpdateCoordinator[GeyserPasteurizationData]):
@@ -96,7 +101,10 @@ class GeyserPasteurizationCoordinator(DataUpdateCoordinator[GeyserPasteurization
         self._error_message: str | None = None
         self._heater_on: bool = False
         self._temp_unavailable_logged: bool = False
+        self._grid_unavailable_logged: bool = False
+        self._grid_blocked: bool = False
         self._unsub_temp_listener: Any = None
+        self._unsub_grid_listener: Any = None
 
     # ------------------------------------------------------------------
     # Options / configuration helpers
@@ -154,6 +162,14 @@ class GeyserPasteurizationCoordinator(DataUpdateCoordinator[GeyserPasteurization
             return None
         return dt_util.parse_time(value)
 
+    @property
+    def grid_sensor_entity_id(self) -> str | None:
+        return self._option(CONF_GRID_SENSOR, None) or None
+
+    @property
+    def grid_on_state(self) -> str:
+        return str(self._option(CONF_GRID_ON_STATE, DEFAULT_GRID_ON_STATE) or DEFAULT_GRID_ON_STATE)
+
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
@@ -171,16 +187,23 @@ class GeyserPasteurizationCoordinator(DataUpdateCoordinator[GeyserPasteurization
         self._state = self._compute_idle_state(dt_util.utcnow())
 
         self._unsub_temp_listener = async_track_state_change_event(
-            self.hass, [self.temp_sensor_entity_id], self._async_temp_changed
+            self.hass, [self.temp_sensor_entity_id], self._async_watched_entity_changed
         )
+        if self.grid_sensor_entity_id:
+            self._unsub_grid_listener = async_track_state_change_event(
+                self.hass, [self.grid_sensor_entity_id], self._async_watched_entity_changed
+            )
 
     async def async_shutdown_listeners(self) -> None:
         if self._unsub_temp_listener is not None:
             self._unsub_temp_listener()
             self._unsub_temp_listener = None
+        if self._unsub_grid_listener is not None:
+            self._unsub_grid_listener()
+            self._unsub_grid_listener = None
 
     @callback
-    def _async_temp_changed(self, event: Event[EventStateChangedData]) -> None:
+    def _async_watched_entity_changed(self, event: Event[EventStateChangedData]) -> None:
         self.hass.async_create_task(self.async_request_refresh())
 
     def _compute_idle_state(self, now: datetime) -> str:
@@ -200,8 +223,9 @@ class GeyserPasteurizationCoordinator(DataUpdateCoordinator[GeyserPasteurization
     async def _async_update_data(self) -> GeyserPasteurizationData:
         now = dt_util.utcnow()
         temperature = self._read_temperature()
+        on_grid = self._is_on_grid()
 
-        await self._async_process_state(now, temperature)
+        await self._async_process_state(now, temperature, on_grid)
 
         days_since: float | None = None
         if self._last_pasteurization is not None:
@@ -232,7 +256,26 @@ class GeyserPasteurizationCoordinator(DataUpdateCoordinator[GeyserPasteurization
             max_runtime_minutes=self.max_runtime_minutes,
             minutes_remaining=minutes_remaining,
             error_message=self._error_message,
+            on_grid_power=on_grid,
+            paused_reason="Waiting for grid power" if self._grid_blocked else None,
         )
+
+    def _is_on_grid(self) -> bool:
+        entity_id = self.grid_sensor_entity_id
+        if not entity_id:
+            return True
+        state = self.hass.states.get(entity_id)
+        if state is None or state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+            if not self._grid_unavailable_logged:
+                _LOGGER.warning(
+                    "Grid power sensor %s is unavailable or unknown; "
+                    "treating as not-on-grid as a safety precaution",
+                    entity_id,
+                )
+                self._grid_unavailable_logged = True
+            return False
+        self._grid_unavailable_logged = False
+        return state.state.strip().casefold() == self.grid_on_state.strip().casefold()
 
     def _read_temperature(self) -> float | None:
         state = self.hass.states.get(self.temp_sensor_entity_id)
@@ -269,7 +312,9 @@ class GeyserPasteurizationCoordinator(DataUpdateCoordinator[GeyserPasteurization
         # Window crosses midnight.
         return now_local >= start or now_local <= end
 
-    async def _async_process_state(self, now: datetime, temperature: float | None) -> None:
+    async def _async_process_state(
+        self, now: datetime, temperature: float | None, on_grid: bool
+    ) -> None:
         elapsed = 0.0
         if self._last_tick is not None:
             elapsed = max(0.0, (now - self._last_tick).total_seconds())
@@ -278,11 +323,18 @@ class GeyserPasteurizationCoordinator(DataUpdateCoordinator[GeyserPasteurization
         if self._state in (STATE_COMPLIANT, STATE_DUE):
             if self._is_overdue(now):
                 self._state = STATE_DUE
-                if self._within_allowed_window(now):
+                if on_grid and self._within_allowed_window(now):
                     await self._async_start_cycle(now)
             else:
                 self._state = STATE_COMPLIANT
             return
+
+        if self._state in (STATE_HEATING, STATE_PASTEURIZING):
+            if not on_grid:
+                await self._async_pause_for_grid()
+                return
+            if self._grid_blocked:
+                await self._async_resume_after_grid()
 
         if self._state == STATE_HEATING:
             self._cycle_runtime_seconds += elapsed
@@ -325,6 +377,20 @@ class GeyserPasteurizationCoordinator(DataUpdateCoordinator[GeyserPasteurization
         # STATE_FAILED: remains until manually acknowledged/reset.
         return
 
+    async def _async_pause_for_grid(self) -> None:
+        if not self._grid_blocked:
+            _LOGGER.info(
+                "Grid power unavailable; pausing pasteurization cycle and disengaging heater"
+            )
+        self._grid_blocked = True
+        if self._heater_on:
+            await self._async_set_heater(False)
+
+    async def _async_resume_after_grid(self) -> None:
+        _LOGGER.info("Grid power restored; resuming pasteurization cycle")
+        self._grid_blocked = False
+        await self._async_set_heater(True)
+
     async def _async_check_failsafe(self, now: datetime) -> bool:
         if self._cycle_runtime_seconds >= self.max_runtime_seconds:
             await self._async_fail_cycle(
@@ -345,6 +411,7 @@ class GeyserPasteurizationCoordinator(DataUpdateCoordinator[GeyserPasteurization
         self._cycle_elapsed_seconds = 0.0
         self._cycle_runtime_seconds = 0.0
         self._error_message = None
+        self._grid_blocked = False
         self._last_tick = now
         await self._async_set_heater(True)
         self.hass.bus.async_fire(
@@ -428,6 +495,13 @@ class GeyserPasteurizationCoordinator(DataUpdateCoordinator[GeyserPasteurization
         if self._state in ACTIVE_STATES:
             _LOGGER.warning("Pasteurization cycle already in progress; ignoring manual trigger")
             return
+        if not self._is_on_grid():
+            _LOGGER.warning(
+                "Manual pasteurization trigger ignored: not currently on grid power"
+            )
+            self._error_message = "Manual trigger blocked: not currently on grid power"
+            await self.async_request_refresh()
+            return
         now = dt_util.utcnow()
         await self._async_start_cycle(now)
         await self.async_request_refresh()
@@ -442,6 +516,7 @@ class GeyserPasteurizationCoordinator(DataUpdateCoordinator[GeyserPasteurization
         self._cycle_elapsed_seconds = 0.0
         self._cycle_runtime_seconds = 0.0
         self._error_message = None
+        self._grid_blocked = False
         await self._async_save_store()
         await self.async_request_refresh()
 
@@ -453,4 +528,5 @@ class GeyserPasteurizationCoordinator(DataUpdateCoordinator[GeyserPasteurization
         self._state = STATE_DUE
         self._cycle_elapsed_seconds = 0.0
         self._cycle_runtime_seconds = 0.0
+        self._grid_blocked = False
         await self.async_request_refresh()
