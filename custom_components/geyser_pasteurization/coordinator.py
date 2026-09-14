@@ -315,67 +315,87 @@ class GeyserPasteurizationCoordinator(DataUpdateCoordinator[GeyserPasteurization
     async def _async_process_state(
         self, now: datetime, temperature: float | None, on_grid: bool
     ) -> None:
+        """Advance the state machine.
+
+        Hold-time toward the required duration is tracked purely from the
+        temperature reading, regardless of whether *we* engaged the heater
+        or it got there some other way (e.g. solar diversion). This means a
+        cycle can complete — or be well under way — without the integration
+        ever having turned the heater on, and it will not redundantly start
+        its own active cycle while the tank is already at/above target.
+        """
         elapsed = 0.0
         if self._last_tick is not None:
             elapsed = max(0.0, (now - self._last_tick).total_seconds())
         self._last_tick = now
 
-        if self._state in (STATE_COMPLIANT, STATE_DUE):
-            if self._is_overdue(now):
-                self._state = STATE_DUE
-                if on_grid and self._within_allowed_window(now):
-                    await self._async_start_cycle(now)
-            else:
-                self._state = STATE_COMPLIANT
-            return
+        if self._state == STATE_FAILED:
+            return  # Remains until manually acknowledged/reset.
 
-        if self._state in (STATE_HEATING, STATE_PASTEURIZING):
-            if not on_grid:
-                await self._async_pause_for_grid()
-                return
-            if self._grid_blocked:
-                await self._async_resume_after_grid()
+        # Keep our own heater in sync with grid availability. This is
+        # independent of the hold timer: losing grid stops us actively
+        # driving the element, but a tank that's already hot (e.g. from
+        # solar) keeps accumulating hold-time regardless.
+        if self._heater_on and not on_grid:
+            await self._async_pause_for_grid()
+        elif self._grid_blocked and on_grid:
+            self._grid_blocked = False
 
-        if self._state == STATE_HEATING:
-            self._cycle_runtime_seconds += elapsed
-            if await self._async_check_failsafe(now):
+        at_target = temperature is not None and temperature >= self.target_temperature
+
+        if at_target:
+            self._cycle_elapsed_seconds += elapsed
+            if self._heater_on:
+                self._cycle_runtime_seconds += elapsed
+                if await self._async_check_failsafe(now):
+                    return
+            if self._cycle_elapsed_seconds >= self.required_duration_seconds:
+                await self._async_complete_cycle(now)
                 return
-            if temperature is not None and temperature >= self.target_temperature:
+            if self._state != STATE_PASTEURIZING:
                 self._state = STATE_PASTEURIZING
                 _LOGGER.info(
-                    "Geyser reached target temperature (%.1f°C); pasteurization timer started",
+                    "Geyser at/above target temperature (%.1f°C); pasteurization timer running%s",
                     temperature,
+                    "" if self._heater_on else " (passively, heater not engaged by this integration)",
                 )
             return
 
-        if self._state == STATE_PASTEURIZING:
+        if temperature is None:
+            # Cannot confirm temperature; hold position without
+            # accumulating or discarding hold progress.
+            if self._heater_on:
+                self._cycle_runtime_seconds += elapsed
+                await self._async_check_failsafe(now)
+            return
+
+        # Temperature is confirmed below target. Only log/react to the
+        # *transition* (state was still Pasteurizing as of the last tick);
+        # otherwise this would log on every poll while parked below target.
+        if self._state == STATE_PASTEURIZING and self._cycle_elapsed_seconds > 0:
+            if self.strict_reset:
+                self._cycle_elapsed_seconds = 0.0
+                _LOGGER.info(
+                    "Temperature dropped below target; strict mode reset the cycle timer"
+                )
+            else:
+                _LOGGER.info(
+                    "Temperature dropped below target; cycle timer paused at %.1f minutes",
+                    self._cycle_elapsed_seconds / 60,
+                )
+
+        if self._heater_on:
             self._cycle_runtime_seconds += elapsed
             if await self._async_check_failsafe(now):
                 return
-            if temperature is None:
-                # Cannot confirm temperature; hold position without
-                # accumulating pasteurization time.
-                return
-            if temperature >= self.target_temperature:
-                self._cycle_elapsed_seconds += elapsed
-                if self._cycle_elapsed_seconds >= self.required_duration_seconds:
-                    await self._async_complete_cycle(now)
-            else:
-                if self.strict_reset:
-                    self._cycle_elapsed_seconds = 0.0
-                    _LOGGER.info(
-                        "Temperature dropped below target; strict mode reset the cycle timer"
-                    )
-                else:
-                    _LOGGER.info(
-                        "Temperature dropped below target; cycle timer paused at %.1f minutes",
-                        self._cycle_elapsed_seconds / 60,
-                    )
-                self._state = STATE_HEATING
+            self._state = STATE_HEATING
             return
 
-        # STATE_FAILED: remains until manually acknowledged/reset.
-        return
+        if self._is_overdue(now) and on_grid and self._within_allowed_window(now):
+            await self._async_start_cycle(now)
+            return
+
+        self._state = STATE_DUE if self._is_overdue(now) else STATE_COMPLIANT
 
     async def _async_pause_for_grid(self) -> None:
         if not self._grid_blocked:
@@ -383,13 +403,7 @@ class GeyserPasteurizationCoordinator(DataUpdateCoordinator[GeyserPasteurization
                 "Grid power unavailable; pausing pasteurization cycle and disengaging heater"
             )
         self._grid_blocked = True
-        if self._heater_on:
-            await self._async_set_heater(False)
-
-    async def _async_resume_after_grid(self) -> None:
-        _LOGGER.info("Grid power restored; resuming pasteurization cycle")
-        self._grid_blocked = False
-        await self._async_set_heater(True)
+        await self._async_set_heater(False)
 
     async def _async_check_failsafe(self, now: datetime) -> bool:
         if self._cycle_runtime_seconds >= self.max_runtime_seconds:
@@ -407,8 +421,12 @@ class GeyserPasteurizationCoordinator(DataUpdateCoordinator[GeyserPasteurization
     # State transitions
     # ------------------------------------------------------------------
     async def _async_start_cycle(self, now: datetime) -> None:
+        # Deliberately does not reset cycle_elapsed_seconds: any hold-time
+        # already banked (e.g. from a prior solar-driven excursion that
+        # didn't quite finish) still counts toward this cycle. Only the
+        # failsafe runtime clock resets, since that tracks a fresh attempt
+        # at actively driving the heater.
         self._state = STATE_HEATING
-        self._cycle_elapsed_seconds = 0.0
         self._cycle_runtime_seconds = 0.0
         self._error_message = None
         self._grid_blocked = False
@@ -420,15 +438,24 @@ class GeyserPasteurizationCoordinator(DataUpdateCoordinator[GeyserPasteurization
                 "entry_id": self.entry.entry_id,
                 "target_temperature": self.target_temperature,
                 "required_duration_minutes": self.required_duration_minutes,
+                "banked_hold_seconds": self._cycle_elapsed_seconds,
             },
         )
-        _LOGGER.info("Starting geyser pasteurization cycle")
+        if self._cycle_elapsed_seconds > 0:
+            _LOGGER.info(
+                "Starting geyser pasteurization cycle (%.1f minutes of hold time already banked)",
+                self._cycle_elapsed_seconds / 60,
+            )
+        else:
+            _LOGGER.info("Starting geyser pasteurization cycle")
 
     async def _async_complete_cycle(self, now: datetime) -> None:
         self._state = STATE_COMPLIANT
         self._last_pasteurization = now
         duration_seconds = self._cycle_elapsed_seconds
-        await self._async_set_heater(False)
+        heater_engaged = self._heater_on
+        if heater_engaged:
+            await self._async_set_heater(False)
         await self._async_save_store()
         self.hass.bus.async_fire(
             EVENT_COMPLETED,
@@ -436,9 +463,16 @@ class GeyserPasteurizationCoordinator(DataUpdateCoordinator[GeyserPasteurization
                 "entry_id": self.entry.entry_id,
                 "completed_at": now.isoformat(),
                 "duration_seconds": duration_seconds,
+                "heater_engaged": heater_engaged,
             },
         )
-        _LOGGER.info("Geyser pasteurization cycle completed successfully")
+        if heater_engaged:
+            _LOGGER.info("Geyser pasteurization cycle completed successfully")
+        else:
+            _LOGGER.info(
+                "Geyser reached and held target temperature passively (e.g. via solar); "
+                "marking pasteurization compliant without engaging the heater"
+            )
         self._cycle_elapsed_seconds = 0.0
         self._cycle_runtime_seconds = 0.0
 
@@ -509,7 +543,10 @@ class GeyserPasteurizationCoordinator(DataUpdateCoordinator[GeyserPasteurization
     async def async_reset_timer(self) -> None:
         """Manually mark the system as pasteurized (e.g. verified by other means)."""
         now = dt_util.utcnow()
-        if self._state in ACTIVE_STATES:
+        if self._heater_on:
+            # Only disengage the heater if this integration is the one
+            # driving it — never touch it if the current hold is passive
+            # (e.g. solar-driven), since we never turned it on.
             await self._async_set_heater(False)
         self._state = STATE_COMPLIANT
         self._last_pasteurization = now
@@ -524,7 +561,10 @@ class GeyserPasteurizationCoordinator(DataUpdateCoordinator[GeyserPasteurization
         """Abort an in-progress cycle without marking the system compliant."""
         if self._state not in ACTIVE_STATES:
             return
-        await self._async_set_heater(False)
+        if self._heater_on:
+            # As in async_reset_timer: only disengage a heater this
+            # integration itself engaged, never a passive/solar-driven hold.
+            await self._async_set_heater(False)
         self._state = STATE_DUE
         self._cycle_elapsed_seconds = 0.0
         self._cycle_runtime_seconds = 0.0

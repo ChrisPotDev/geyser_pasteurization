@@ -11,6 +11,7 @@ Hybrid geysers with solar diversion heat opportunistically: whenever there's exc
 ## Features
 
 - Rolling-window compliance tracking (default 7 days) against a configurable target temperature and hold duration (default 60°C for 32 minutes)
+- Recognizes disinfection that happens on its own (e.g. solar diversion reaching target) and won't redundantly run its own active cycle on top of it — see [Passive / solar-driven pasteurization](#passive--solar-driven-pasteurization) below
 - Automatic cycle start when due (optionally restricted to a time-of-day window, e.g. only run overnight), plus a manual trigger button/service
 - A hard failsafe run-time cutoff (default 180 minutes) that disengages the heater and raises an error state if a cycle can't complete
 - Configurable strictness for what happens if temperature dips below target mid-cycle: pause-and-resume (default) or reset-to-zero
@@ -72,29 +73,43 @@ With this configured:
 
 This is handled natively by the integration's own state machine rather than through a separate automation, specifically so that a grid outage mid-cycle pauses and resumes correctly instead of losing progress or needing you to script that logic yourself.
 
+## Passive / solar-driven pasteurization
+
+Hold-time toward the required duration is tracked purely from the temperature sensor reading — not from whether *this integration's* heater is currently switched on. That means:
+
+- **If the tank is already at/above target when a cycle becomes due, the integration does not engage its own heater on top of it.** It just watches the sensor and lets the existing heat (from solar diversion, or anything else) accumulate hold-time on its own. Status goes straight to `pasteurizing` without ever passing through `heating`, and no `geyser_pasteurization_started` event fires — only `geyser_pasteurization_completed` once the hold duration is satisfied, with a `heater_engaged: false` attribute so you can tell it happened for free.
+- **Once the tank crosses target, tracking continues even after whatever heated it switches off.** If solar's own controller shuts the element off the moment it reaches target, the water stays hot for a while on thermal mass alone — the integration keeps counting based on the sensor reading until either the hold duration is satisfied, or the temperature actually drops back below target.
+- **If a passive hold doesn't quite finish before temperature drops** (e.g. the sun goes behind a cloud a few minutes short of the full duration), and the cycle is still due, the integration tops it up with its own heater rather than starting over — the partial hold-time already banked is preserved, not discarded (unless you've enabled **strict cycle reset**, in which case any drop below target always zeroes the timer, passive or not).
+- **This applies independently of the grid power gate.** Losing grid power only stops the integration engaging its *own* heater; it doesn't stop it from recognizing an already-hot tank, since that heat didn't come from the battery in the first place.
+- **The integration will never turn off a heater it did not itself turn on.** Internally it only ever calls `turn_off` on the heater entity when it's the one that called `turn_on` for the current hold — automatically (grid loss, cycle completion, failsafe) or via the Reset/Cancel button/service. A passive/solar-driven hold is only ever *watched*, never interrupted.
+
+In short: an active cycle (heater engaged by this integration) only ever happens for the portion of the required duration that ambient/solar heating hasn't already covered.
+
 ## How it works — the state machine
 
 ```
- COMPLIANT ──(window elapsed)──▶ DUE ──(window ok / manual trigger)──▶ HEATING
-     ▲                                                                    │
-     │                                                          (temp ≥ target)
-     │                                                                    ▼
-     └──────────────(hold duration reached)────────────── PASTEURIZING
-                                                                    │
-                                                        (temp < target, non-strict)
-                                                                    ▼
-                                                                 HEATING
-                                                                    │
-                                                     (runtime ≥ max failsafe, any state)
-                                                                    ▼
-                                                                 FAILED (manual reset required)
+ COMPLIANT ──(window elapsed)──▶ DUE ──(temp < target: window ok / manual trigger)──▶ HEATING
+     ▲  ▲                          │  │                                                  │
+     │  │                          │  └──(temp ≥ target, any time)──▶ PASTEURIZING ◀──────┘
+     │  │                          │                                       │      (temp ≥ target)
+     │  └──(temp ≥ target, any time, no window needed)────────────────────►│
+     │                                                                     │
+     └──────────────────────(hold duration reached)──────────────────────┘
+                                                                            │
+                                                            (temp < target, non-strict: keep banked time)
+                                                                            ▼
+                                                                         HEATING / DUE
+                                                                            │
+                                                         (heater-engaged runtime ≥ max failsafe)
+                                                                            ▼
+                                                                         FAILED (manual reset required)
 ```
 
-- **Compliant** — a valid cycle completed within the rolling window.
-- **Due** — the window has elapsed with no valid cycle. If no allowed-run-window is configured (or the current time is inside it), a cycle starts automatically; otherwise it waits.
-- **Heating** — the heater is engaged, temperature rising toward target.
-- **Pasteurizing** — temperature is at/above target; the hold-duration timer is counting. If temperature drops below target, the timer either pauses (default) or resets to zero (strict mode), and the state falls back to Heating.
-- **Failed** — the heater ran for the configured maximum failsafe time without completing a hold. The heater is disengaged immediately and the state stays Failed until you acknowledge it (Reset or Cancel).
+- **Compliant** — a valid hold completed within the rolling window (whether driven by the integration's own heater, passively, or a mix of both).
+- **Due** — the window has elapsed with no valid hold recorded, and the tank is currently below target. If on grid power and (no allowed-run-window is configured, or the current time is inside it), the integration's own heater engages; otherwise it waits — including waiting on ambient/solar heating to bring it up on its own.
+- **Heating** — *this integration's* heater is engaged, temperature rising toward target.
+- **Pasteurizing** — temperature is at/above target right now, however that happened; the hold-duration timer is counting. If temperature drops below target before completion, the timer either pauses (default) or resets to zero (strict mode), falling back to `heating` (if the integration's heater is engaged) or `due` (if not, e.g. it was a passive hold).
+- **Failed** — *the integration's own heater* ran for the configured maximum failsafe time without completing a hold (time spent passively at temperature, or paused for grid power, never counts toward this). The heater is disengaged immediately and the state stays Failed until you acknowledge it (Reset or Cancel).
 
 ## Entities
 
@@ -102,7 +117,7 @@ Every entity is grouped under a single **Geyser Pasteurization** device.
 
 | Entity | Type | Description |
 |---|---|---|
-| `sensor.geyser_pasteurization_status` | Sensor (enum) | Current state: `compliant`, `due`, `heating`, `pasteurizing`, `failed` |
+| `sensor.geyser_pasteurization_status` | Sensor (enum) | Current state: `compliant`, `due`, `heating`, `pasteurizing`, `failed`. `pasteurizing` can be reached without `heating` if the tank is already hot passively (e.g. from solar) — see [Passive / solar-driven pasteurization](#passive--solar-driven-pasteurization). |
 | `sensor.geyser_last_pasteurization` | Sensor (timestamp) | When the last successful cycle completed |
 | `sensor.geyser_days_since_pasteurization` | Sensor | Days elapsed since the last successful cycle |
 | `sensor.geyser_cycle_progress` | Sensor | 0–100% progress of an active hold; attributes include minutes elapsed/remaining |
@@ -135,9 +150,9 @@ Listen for these in automations to hook up mobile notifications, dashboards, or 
 
 | Event | Fired when | Data |
 |---|---|---|
-| `geyser_pasteurization_started` | A cycle begins heating | `entry_id`, `target_temperature`, `required_duration_minutes` |
-| `geyser_pasteurization_completed` | A cycle successfully holds target for the required duration | `entry_id`, `completed_at`, `duration_seconds` |
-| `geyser_pasteurization_failed` | The failsafe run-time is exceeded without completing | `entry_id`, `reason`, `failed_at` |
+| `geyser_pasteurization_started` | The integration engages its own heater (never fires for a purely passive/solar hold) | `entry_id`, `target_temperature`, `required_duration_minutes`, `banked_hold_seconds` (any passive hold-time already accumulated before engaging) |
+| `geyser_pasteurization_completed` | A hold at/above target completes for the required duration | `entry_id`, `completed_at`, `duration_seconds`, `heater_engaged` (`false` if fully passive/solar-driven) |
+| `geyser_pasteurization_failed` | The integration's own heater-engaged runtime exceeds the failsafe without completing | `entry_id`, `reason`, `failed_at` |
 
 Example automation — notify on failure:
 
@@ -179,7 +194,7 @@ entities:
 
 ## Troubleshooting
 
-- **Status stuck on `due`, never starts heating** — check whether an allowed run window is configured and you're outside it; either wait or use the manual trigger button/service.
+- **Status stuck on `due`, never starts heating** — check whether an allowed run window or grid power gate is configured and currently blocking it; either wait, adjust the window, or use the manual trigger button/service. Also check whether the tank is already at/above target — if so, this is expected: it's waiting on the passive hold to finish rather than engaging its own heater (see [Passive / solar-driven pasteurization](#passive--solar-driven-pasteurization)).
 - **Temperature sensor unavailable/unknown** — the integration logs a warning and pauses timer accumulation (it does not turn the heater off) until the sensor reports a valid numeric value again.
 - **Heater entity doesn't respond** — confirm its domain is one of `switch`, `input_boolean`, `climate`, `water_heater`, and that the entity actually accepts `turn_on`/`turn_off`.
 
