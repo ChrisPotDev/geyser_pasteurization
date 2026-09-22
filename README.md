@@ -10,7 +10,7 @@ Hybrid geysers with solar diversion heat opportunistically: whenever there's exc
 
 ## Features
 
-- Rolling-window compliance tracking (default 7 days) against a configurable target temperature and hold duration (default 60°C for 32 minutes)
+- Rolling-window compliance tracking (default 7 days) against a configurable target temperature and hold duration (default 60°C for 32 minutes), on a **fixed schedule that never drifts** — see [Fixed due schedule](#fixed-due-schedule) below
 - Recognizes disinfection that happens on its own (e.g. solar diversion reaching target) and won't redundantly run its own active cycle on top of it — see [Passive / solar-driven pasteurization](#passive--solar-driven-pasteurization) below
 - Automatic cycle start when due (optionally restricted to a time-of-day window, e.g. only run overnight), plus a manual trigger button/service
 - A hard failsafe run-time cutoff (default 180 minutes) that disengages the heater and raises an error state if a cycle can't complete
@@ -56,6 +56,18 @@ All configuration is done through the UI. On initial setup you're asked for:
 | "On grid" state value | The exact state string of the sensor above that means "on grid power" | `on` |
 
 All of these except the two entities can be changed later via **Settings → Devices & Services → Geyser Pasteurization → Configure** (the options flow), without removing and re-adding the integration.
+
+## Fixed due schedule
+
+The next due date is tracked as its own fixed schedule anchor (`sensor.geyser_pasteurization_next_due`), separate from `sensor.geyser_last_pasteurization`. Each time a cycle completes, the schedule advances by exactly one rolling-window interval **from its own previous scheduled point** — never from whenever that particular cycle happened to actually finish. This matters because a cycle's actual completion time varies: an active cycle takes however long it takes to heat and hold, and a passive/solar-driven one might take even longer to naturally reach target. Anchoring the next due date to completion time would let that variance silently drift the schedule later and later, cycle after cycle.
+
+So instead, the due schedule always lands back on the same fixed cadence — e.g. if it first became due at 02:00 on a Monday, it'll next become due at 02:00 the following Monday, regardless of whether that first cycle finished at 02:05 or took until Wednesday to complete passively. If a due date is badly missed (e.g. Home Assistant was offline for a few weeks), it jumps forward in whole window-sized steps to the next future point on that same original schedule, rather than resetting to "now" — so a long outage doesn't shift your schedule either, and you don't get flooded with catch-up cycles for every window that was missed.
+
+**Unscheduled early completions** (e.g. solar drives a full valid hold well ahead of the current due date — see [Passive / solar-driven pasteurization](#passive--solar-driven-pasteurization)) are handled as a third case: rather than leaving the existing checkpoint in place — which could otherwise be less than a full window away and trigger an unnecessary active cycle only a few days later — the schedule extends forward just far enough to guarantee a full window of validity from that early completion. Critically, it does this the same way as every other advancement: in whole-window steps from the *original* fixed anchor, never by adopting the early completion's own timestamp. So an early solar win that happens to finish at, say, 18:00 does not drag your 02:00 schedule to 18:00 — the time-of-day stays exactly fixed in all three cases (on-time, late, or early).
+
+A manual **Reset** (button or service) is the one exception: it deliberately re-anchors the schedule to "now + rolling window," since you're explicitly telling the integration to treat this moment as freshly compliant.
+
+If you're upgrading from a version without this fixed anchor, it's seeded automatically from your existing `last_pasteurization` timestamp the first time the integration loads, so your existing cadence continues rather than jumping.
 
 ## Grid power gate (battery / inverter setups)
 
@@ -118,7 +130,8 @@ Every entity is grouped under a single **Geyser Pasteurization** device.
 | Entity | Type | Description |
 |---|---|---|
 | `sensor.geyser_pasteurization_status` | Sensor (enum) | Current state: `compliant`, `due`, `heating`, `pasteurizing`, `failed`. `pasteurizing` can be reached without `heating` if the tank is already hot passively (e.g. from solar) — see [Passive / solar-driven pasteurization](#passive--solar-driven-pasteurization). |
-| `sensor.geyser_last_pasteurization` | Sensor (timestamp) | When the last successful cycle completed |
+| `sensor.geyser_last_pasteurization` | Sensor (timestamp) | When the last successful cycle actually completed |
+| `sensor.geyser_pasteurization_next_due` | Sensor (timestamp) | The fixed, drift-free schedule point at which the next cycle becomes due — see [Fixed due schedule](#fixed-due-schedule) |
 | `sensor.geyser_days_since_pasteurization` | Sensor | Days elapsed since the last successful cycle |
 | `sensor.geyser_cycle_progress` | Sensor | 0–100% progress of an active hold; attributes include minutes elapsed/remaining |
 | `binary_sensor.geyser_pasteurization_overdue` | Binary sensor | `on` when the rolling window has been exceeded |
@@ -151,7 +164,7 @@ Listen for these in automations to hook up mobile notifications, dashboards, or 
 | Event | Fired when | Data |
 |---|---|---|
 | `geyser_pasteurization_started` | The integration engages its own heater (never fires for a purely passive/solar hold) | `entry_id`, `target_temperature`, `required_duration_minutes`, `banked_hold_seconds` (any passive hold-time already accumulated before engaging) |
-| `geyser_pasteurization_completed` | A hold at/above target completes for the required duration | `entry_id`, `completed_at`, `duration_seconds`, `heater_engaged` (`false` if fully passive/solar-driven) |
+| `geyser_pasteurization_completed` | A hold at/above target completes for the required duration | `entry_id`, `completed_at`, `duration_seconds`, `heater_engaged` (`false` if fully passive/solar-driven), `next_due_at` (the newly advanced fixed schedule point) |
 | `geyser_pasteurization_failed` | The integration's own heater-engaged runtime exceeds the failsafe without completing | `entry_id`, `reason`, `failed_at` |
 
 Example automation — notify on failure:
@@ -179,6 +192,7 @@ entities:
   - entity: sensor.geyser_cycle_progress
   - entity: sensor.geyser_days_since_pasteurization
   - entity: sensor.geyser_last_pasteurization
+  - entity: sensor.geyser_pasteurization_next_due
   - entity: binary_sensor.geyser_pasteurization_overdue
   - entity: button.trigger_pasteurization_cycle
   - entity: button.reset_pasteurization_timer

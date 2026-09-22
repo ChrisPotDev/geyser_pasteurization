@@ -24,6 +24,7 @@ from .const import (
     ATTR_ERROR_MESSAGE,
     ATTR_MAX_RUNTIME_MINUTES,
     ATTR_MINUTES_REMAINING,
+    ATTR_NEXT_DUE_AT,
     ATTR_ON_GRID_POWER,
     ATTR_PAUSED_REASON,
     ATTR_REQUIRED_DURATION_MINUTES,
@@ -47,6 +48,7 @@ async def async_setup_entry(
         [
             GeyserStatusSensor(coordinator, entry),
             GeyserLastPasteurizationSensor(coordinator, entry),
+            GeyserNextDueSensor(coordinator, entry),
             GeyserDaysSinceSensor(coordinator, entry),
             GeyserCycleProgressSensor(coordinator, entry),
         ]
@@ -111,6 +113,7 @@ class GeyserStatusSensor(_GeyserSensorBase):
             ATTR_ERROR_MESSAGE: data.error_message,
             ATTR_ON_GRID_POWER: data.on_grid_power,
             ATTR_PAUSED_REASON: data.paused_reason,
+            ATTR_NEXT_DUE_AT: data.next_due_at,
         }
 
 
@@ -131,6 +134,25 @@ class GeyserLastPasteurizationSensor(_GeyserSensorBase):
     @property
     def native_value(self) -> datetime | None:
         return self._data.last_pasteurization
+
+
+class GeyserNextDueSensor(_GeyserSensorBase):
+    """Represents the fixed, drift-free timestamp of the next scheduled cycle."""
+
+    def __init__(self, coordinator: GeyserPasteurizationCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(
+            coordinator,
+            entry,
+            SensorEntityDescription(
+                key="next_pasteurization_due",
+                translation_key="next_pasteurization_due",
+                device_class=SensorDeviceClass.TIMESTAMP,
+            ),
+        )
+
+    @property
+    def native_value(self) -> datetime | None:
+        return self._data.next_due_at
 
 
 class GeyserDaysSinceSensor(_GeyserSensorBase):

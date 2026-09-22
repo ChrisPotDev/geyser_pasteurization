@@ -73,6 +73,9 @@
       "last_pasteurization": {
         "name": "Last pasteurization"
       },
+      "next_pasteurization_due": {
+        "name": "Next pasteurization due"
+      },
       "days_since_pasteurization": {
         "name": "Days since pasteurization"
       },

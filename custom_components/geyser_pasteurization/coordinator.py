@@ -62,6 +62,7 @@ class GeyserPasteurizationData:
 
     state: str
     last_pasteurization: datetime | None
+    next_due_at: datetime | None
     days_since: float | None
     overdue: bool
     current_temperature: float | None
@@ -95,6 +96,7 @@ class GeyserPasteurizationCoordinator(DataUpdateCoordinator[GeyserPasteurization
 
         self._state: str = STATE_DUE
         self._last_pasteurization: datetime | None = None
+        self._next_due_at: datetime | None = None
         self._cycle_elapsed_seconds: float = 0.0
         self._cycle_runtime_seconds: float = 0.0
         self._last_tick: datetime | None = None
@@ -181,6 +183,18 @@ class GeyserPasteurizationCoordinator(DataUpdateCoordinator[GeyserPasteurization
         else:
             self._last_pasteurization = None
 
+        if stored and stored.get("next_due_at"):
+            self._next_due_at = dt_util.parse_datetime(stored["next_due_at"])
+        elif self._last_pasteurization is not None:
+            # Migrating from a version without a fixed schedule anchor:
+            # seed it from the last known completion so the existing
+            # cadence continues from here rather than jumping.
+            self._next_due_at = self._last_pasteurization + timedelta(
+                days=self.rolling_window_days
+            )
+        else:
+            self._next_due_at = None
+
         # A restart must never resume an in-progress heating cycle. The
         # heater is left exactly as it was found; only bookkeeping state
         # is recomputed from the persisted last-successful-cycle timestamp.
@@ -212,10 +226,38 @@ class GeyserPasteurizationCoordinator(DataUpdateCoordinator[GeyserPasteurization
         return STATE_COMPLIANT
 
     def _is_overdue(self, now: datetime) -> bool:
-        if self._last_pasteurization is None:
-            return True
-        days = (now - self._last_pasteurization).total_seconds() / 86400
-        return days >= self.rolling_window_days
+        return self._next_due_at is None or now >= self._next_due_at
+
+    def _advance_schedule(self, completed_at: datetime) -> None:
+        """Advance the fixed due schedule.
+
+        Always steps forward in whole `rolling_window_days` increments
+        from the schedule's own previous anchor — never from
+        `completed_at` itself — so the scheduled time-of-day never
+        drifts, regardless of how long a cycle actually took to
+        complete, or why.
+
+        On-time or late completions (the schedule's due point was
+        already reached) simply advance past `completed_at`. An early,
+        unscheduled completion — e.g. a solar-driven hold that finishes
+        well ahead of the current due point — instead advances only as
+        far as needed to guarantee at least one full window of validity
+        from it, so it doesn't leave a shorter-than-intended gap before
+        the next check. Either way the fixed time-of-day is preserved,
+        since every step is a whole window added to the original anchor.
+        """
+        window = timedelta(days=self.rolling_window_days)
+        if self._next_due_at is None:
+            self._next_due_at = completed_at + window
+            return
+
+        if self._next_due_at <= completed_at:
+            while self._next_due_at <= completed_at:
+                self._next_due_at += window
+        else:
+            target = completed_at + window
+            while self._next_due_at < target:
+                self._next_due_at += window
 
     # ------------------------------------------------------------------
     # Main update loop
@@ -244,6 +286,7 @@ class GeyserPasteurizationCoordinator(DataUpdateCoordinator[GeyserPasteurization
         return GeyserPasteurizationData(
             state=self._state,
             last_pasteurization=self._last_pasteurization,
+            next_due_at=self._next_due_at,
             days_since=days_since,
             overdue=self._is_overdue(now),
             current_temperature=temperature,
@@ -452,6 +495,7 @@ class GeyserPasteurizationCoordinator(DataUpdateCoordinator[GeyserPasteurization
     async def _async_complete_cycle(self, now: datetime) -> None:
         self._state = STATE_COMPLIANT
         self._last_pasteurization = now
+        self._advance_schedule(now)
         duration_seconds = self._cycle_elapsed_seconds
         heater_engaged = self._heater_on
         if heater_engaged:
@@ -464,6 +508,7 @@ class GeyserPasteurizationCoordinator(DataUpdateCoordinator[GeyserPasteurization
                 "completed_at": now.isoformat(),
                 "duration_seconds": duration_seconds,
                 "heater_engaged": heater_engaged,
+                "next_due_at": self._next_due_at.isoformat() if self._next_due_at else None,
             },
         )
         if heater_engaged:
@@ -517,7 +562,10 @@ class GeyserPasteurizationCoordinator(DataUpdateCoordinator[GeyserPasteurization
             {
                 "last_pasteurization": (
                     self._last_pasteurization.isoformat() if self._last_pasteurization else None
-                )
+                ),
+                "next_due_at": (
+                    self._next_due_at.isoformat() if self._next_due_at else None
+                ),
             }
         )
 
@@ -550,6 +598,9 @@ class GeyserPasteurizationCoordinator(DataUpdateCoordinator[GeyserPasteurization
             await self._async_set_heater(False)
         self._state = STATE_COMPLIANT
         self._last_pasteurization = now
+        # A manual reset re-anchors the fixed schedule from this moment,
+        # rather than advancing from whatever the old schedule was.
+        self._next_due_at = now + timedelta(days=self.rolling_window_days)
         self._cycle_elapsed_seconds = 0.0
         self._cycle_runtime_seconds = 0.0
         self._error_message = None
