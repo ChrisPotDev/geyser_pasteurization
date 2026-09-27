@@ -386,7 +386,18 @@ class GeyserPasteurizationCoordinator(DataUpdateCoordinator[GeyserPasteurization
 
         at_target = temperature is not None and temperature >= self.target_temperature
 
-        if at_target:
+        # Hold-time only ever needs tracking while a cycle is genuinely
+        # required: either one is already under way (Heating/Pasteurizing),
+        # or the rolling window has actually elapsed (Due). Without this
+        # guard, a tank that's still hot right after a successful
+        # completion (very likely, since it just held target) would
+        # immediately re-enter Pasteurizing and complete again — and
+        # again — repeatedly firing completed events for as long as it
+        # stays hot, instead of just staying Compliant.
+        overdue = self._is_overdue(now)
+        needs_tracking = at_target and (self._state in ACTIVE_STATES or overdue)
+
+        if needs_tracking:
             self._cycle_elapsed_seconds += elapsed
             if self._heater_on:
                 self._cycle_runtime_seconds += elapsed
@@ -402,6 +413,12 @@ class GeyserPasteurizationCoordinator(DataUpdateCoordinator[GeyserPasteurization
                     temperature,
                     "" if self._heater_on else " (passively, heater not engaged by this integration)",
                 )
+            return
+
+        if at_target:
+            # At/above target, but already compliant and not due — nothing
+            # to track or complete; there's no need for another cycle yet.
+            self._state = STATE_COMPLIANT
             return
 
         if temperature is None:

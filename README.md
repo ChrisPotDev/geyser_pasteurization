@@ -94,8 +94,9 @@ Hold-time toward the required duration is tracked purely from the temperature se
 - **If a passive hold doesn't quite finish before temperature drops** (e.g. the sun goes behind a cloud a few minutes short of the full duration), and the cycle is still due, the integration tops it up with its own heater rather than starting over — the partial hold-time already banked is preserved, not discarded (unless you've enabled **strict cycle reset**, in which case any drop below target always zeroes the timer, passive or not).
 - **This applies independently of the grid power gate.** Losing grid power only stops the integration engaging its *own* heater; it doesn't stop it from recognizing an already-hot tank, since that heat didn't come from the battery in the first place.
 - **The integration will never turn off a heater it did not itself turn on.** Internally it only ever calls `turn_off` on the heater entity when it's the one that called `turn_on` for the current hold — automatically (grid loss, cycle completion, failsafe) or via the Reset/Cancel button/service. A passive/solar-driven hold is only ever *watched*, never interrupted.
+- **Once already compliant, staying hot doesn't trigger anything further.** Hold-time is only tracked while a cycle is actually needed — either one is already under way, or the schedule is genuinely due. A tank that's still hot right after a successful completion (very likely, since it just held target) stays `compliant` rather than immediately restarting a whole new hold — it won't repeatedly complete and re-fire `geyser_pasteurization_completed` for as long as it happens to stay above target.
 
-In short: an active cycle (heater engaged by this integration) only ever happens for the portion of the required duration that ambient/solar heating hasn't already covered.
+In short: an active cycle (heater engaged by this integration) only ever happens for the portion of the required duration that ambient/solar heating hasn't already covered, and a single valid hold is only ever counted once per due period.
 
 ## How it works — the state machine
 
