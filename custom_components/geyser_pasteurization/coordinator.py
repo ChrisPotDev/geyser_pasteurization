@@ -97,6 +97,7 @@ class GeyserPasteurizationCoordinator(DataUpdateCoordinator[GeyserPasteurization
         self._state: str = STATE_DUE
         self._last_pasteurization: datetime | None = None
         self._next_due_at: datetime | None = None
+        self._schedule_window_days: int | None = None
         self._cycle_elapsed_seconds: float = 0.0
         self._cycle_runtime_seconds: float = 0.0
         self._last_tick: datetime | None = None
@@ -183,17 +184,43 @@ class GeyserPasteurizationCoordinator(DataUpdateCoordinator[GeyserPasteurization
         else:
             self._last_pasteurization = None
 
-        if stored and stored.get("next_due_at"):
-            self._next_due_at = dt_util.parse_datetime(stored["next_due_at"])
-        elif self._last_pasteurization is not None:
-            # Migrating from a version without a fixed schedule anchor:
-            # seed it from the last known completion so the existing
-            # cadence continues from here rather than jumping.
-            self._next_due_at = self._last_pasteurization + timedelta(
-                days=self.rolling_window_days
+        current_window = self.rolling_window_days
+        stored_next_due = (
+            dt_util.parse_datetime(stored["next_due_at"])
+            if stored and stored.get("next_due_at")
+            else None
+        )
+        stored_window = stored.get("schedule_window_days") if stored else None
+
+        if stored_next_due is not None and (
+            stored_window is None or stored_window == current_window
+        ):
+            # The persisted schedule still reflects the currently
+            # configured window (or predates tracking which window it
+            # was computed against, in which case we assume it matches
+            # rather than force an unwanted reschedule on first upgrade).
+            self._next_due_at = stored_next_due
+            self._schedule_window_days = (
+                stored_window if stored_window is not None else current_window
             )
+        elif self._last_pasteurization is not None:
+            # Either migrating from a version without a fixed schedule
+            # anchor, or the configured rolling window has changed since
+            # it was last computed (e.g. via Configure) -- reseed it from
+            # the last known completion using the *current* window, so a
+            # reconfiguration takes effect immediately instead of only
+            # after the next completion.
+            if stored_next_due is not None:
+                _LOGGER.info(
+                    "Rolling window changed from %s to %s days; rescheduling next due date",
+                    stored_window,
+                    current_window,
+                )
+            self._next_due_at = self._last_pasteurization + timedelta(days=current_window)
+            self._schedule_window_days = current_window
         else:
             self._next_due_at = None
+            self._schedule_window_days = None
 
         # A restart must never resume an in-progress heating cycle. The
         # heater is left exactly as it was found; only bookkeeping state
@@ -247,6 +274,8 @@ class GeyserPasteurizationCoordinator(DataUpdateCoordinator[GeyserPasteurization
         since every step is a whole window added to the original anchor.
         """
         window = timedelta(days=self.rolling_window_days)
+        self._schedule_window_days = self.rolling_window_days
+
         if self._next_due_at is None:
             self._next_due_at = completed_at + window
             return
@@ -583,6 +612,7 @@ class GeyserPasteurizationCoordinator(DataUpdateCoordinator[GeyserPasteurization
                 "next_due_at": (
                     self._next_due_at.isoformat() if self._next_due_at else None
                 ),
+                "schedule_window_days": self._schedule_window_days,
             }
         )
 
@@ -618,6 +648,7 @@ class GeyserPasteurizationCoordinator(DataUpdateCoordinator[GeyserPasteurization
         # A manual reset re-anchors the fixed schedule from this moment,
         # rather than advancing from whatever the old schedule was.
         self._next_due_at = now + timedelta(days=self.rolling_window_days)
+        self._schedule_window_days = self.rolling_window_days
         self._cycle_elapsed_seconds = 0.0
         self._cycle_runtime_seconds = 0.0
         self._error_message = None

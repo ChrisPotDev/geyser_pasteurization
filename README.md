@@ -67,6 +67,8 @@ So instead, the due schedule always lands back on the same fixed cadence — e.g
 
 A manual **Reset** (button or service) is the one exception: it deliberately re-anchors the schedule to "now + rolling window," since you're explicitly telling the integration to treat this moment as freshly compliant.
 
+**Changing the rolling window in Configure takes effect immediately, not just on the next completion.** The integration remembers which window size the current schedule point was computed against; if you reconfigure to a different value, it's detected the next time the integration loads (which happens automatically right after you save the change) and the schedule is recomputed from `last_pasteurization` using the new window straight away — shrinking the window brings the next due date closer, widening it pushes the due date out. A plain restart with no configuration change never triggers this, so it won't unexpectedly reschedule anything on its own.
+
 If you're upgrading from a version without this fixed anchor, it's seeded automatically from your existing `last_pasteurization` timestamp the first time the integration loads, so your existing cadence continues rather than jumping.
 
 ## Grid power gate (battery / inverter setups)
