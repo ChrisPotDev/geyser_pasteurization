@@ -1,0 +1,64 @@
+name: Validate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Weekly, so validation still catches hassfest/HACS rule changes
+    # even when nothing in this repo has changed.
+    - cron: "0 3 * * 0"
+  workflow_dispatch:
+
+jobs:
+  hassfest:
+    name: Hassfest
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Run hassfest
+        uses: home-assistant/actions/hassfest@master
+
+  hacs:
+    name: HACS
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Run HACS action
+        uses: hacs/action@main
+        with:
+          category: integration
+
+  python:
+    name: Python syntax, imports, and JSON
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Byte-compile all integration files
+        run: python -m py_compile custom_components/geyser_pasteurization/*.py
+      - name: Install ruff
+        run: pip install ruff
+      - name: Lint with ruff (advisory, non-blocking)
+        # Not yet verified clean against this codebase locally, so this
+        # reports issues without failing the run until it has been.
+        continue-on-error: true
+        run: ruff check custom_components/geyser_pasteurization
+      - name: Validate JSON files
+        run: |
+          python - <<'EOF'
+          import json
+          import pathlib
+
+          files = list(pathlib.Path("custom_components/geyser_pasteurization").rglob("*.json"))
+          files.append(pathlib.Path("hacs.json"))
+          for f in files:
+              json.loads(f.read_text(encoding="utf-8"))
+              print("OK", f)
+          EOF
