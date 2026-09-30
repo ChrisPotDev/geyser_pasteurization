@@ -3,10 +3,10 @@
   "name": "Geyser Pasteurization",
   "codeowners": ["@ChrisPotDev"],
   "config_flow": true,
-  "documentation": "https://github.com/ChrisPotDev/geyser_pasteurization",
+  "documentation": "https://github.com/ChrisPotDev/ha-geyser-pasteurization",
   "integration_type": "device",
   "iot_class": "local_polling",
-  "issue_tracker": "https://github.com/ChrisPotDev/geyser_pasteurization/issues",
+  "issue_tracker": "https://github.com/ChrisPotDev/ha-geyser-pasteurization/issues",
   "requirements": [],
   "version": "1.0.0"
 }

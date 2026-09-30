@@ -26,7 +26,7 @@ Hybrid geysers with solar diversion heat opportunistically: whenever there's exc
 ### HACS (custom repository)
 
 1. In HACS, go to **Integrations → ⋮ → Custom repositories**.
-2. Add `https://github.com/ChrisPotDev/geyser_pasteurization` as an **Integration**.
+2. Add `https://github.com/ChrisPotDev/ha-geyser-pasteurization` as an **Integration**.
 3. Install **Geyser Pasteurization**, then restart Home Assistant.
 
 ### Manual
